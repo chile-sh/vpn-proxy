@@ -15,6 +15,7 @@ module.exports = {
   pass: VPN_PASS,
   imageName: IMAGE_NAME,
   dockerPrefix: DOCKER_PREFIX,
+  reqLimit: 1,
   proxy: {
     startsFrom: 5000,
     port: PORT

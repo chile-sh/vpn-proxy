@@ -8,6 +8,8 @@
     "build": "cd docker && ./build.sh"
   },
   "dependencies": {
+    "async-exit-hook": "^2.0.1",
+    "axios": "^0.18.0",
     "dockerode": "^2.5.8",
     "dotenv": "^6.2.0",
     "fs-extra": "^7.0.1",
