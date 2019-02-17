@@ -1,0 +1,21 @@
+{
+  "name": "vpn-proxy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "cd docker && ./build.sh"
+  },
+  "dependencies": {
+    "dockerode": "^2.5.8",
+    "dotenv": "^6.2.0",
+    "fs-extra": "^7.0.1",
+    "http-proxy": "^1.17.0",
+    "lodash": "^4.17.11"
+  },
+  "devDependencies": {
+    "prettier": "^1.16.4",
+    "standard": "^12.0.1"
+  }
+}
