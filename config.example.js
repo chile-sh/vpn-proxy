@@ -32,7 +32,7 @@ module.exports = {
   ],
   proxy: {
     initialPort: 9000,
-    initialRcpPort: 3000,
+    initialRpcPort: 3000,
     port: 5000
   }
 }

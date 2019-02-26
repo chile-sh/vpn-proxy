@@ -2,6 +2,4 @@
 
 export $(egrep -v '^#' ../.env | xargs)
 
-PREFIX=${DOCKER_PREFIX:-proxy}
-
-docker build -t $PREFIX .
+docker build -t ${IMAGE_NAME:-vpnproxy} . --no-cache
