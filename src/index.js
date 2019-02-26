@@ -4,25 +4,34 @@ const Docker = require('dockerode')
 const fs = require('fs-extra')
 const http = require('http')
 const httpProxy = require('http-proxy')
+const logger = require('./logger')
 const exitHook = require('async-exit-hook')
+const _ = require('lodash')
+const jayson = require('jayson')
 
-const config = require('./config')
-const { sample, myIp } = require('./helpers')
+const config = require('../config')
+const { sample, myIp, wait } = require('./helpers')
 
 const docker = new Docker()
 const proxy = httpProxy.createProxyServer()
 
 const state = {
-  allFiles: [],
-  publicIp: null
+  publicIp: null,
+  vpns: {},
+  files: [],
+  stats: {}
 }
 
-const create = async (name, port, auth = {}) => {
-  if (!state.allFiles.find(n => n === name)) {
-    throw Error(`ovpn file ${name} not found.`)
-  }
+const getFiles = async id => {
+  const dir = `./ovpn/${id}`
+  const exists = await fs.exists(dir)
 
-  const created = await docker.createContainer({
+  if (!exists) throw Error(`Directory ${id} not found.`)
+  return (await fs.readdir(dir)).filter(f => f.endsWith('.ovpn'))
+}
+
+const create = async (name, port, rpcPort) =>
+  docker.createContainer({
     Image: config.imageName,
     name: `${config.dockerPrefix}-${name}`,
     AttachStdin: false,
@@ -33,19 +42,16 @@ const create = async (name, port, auth = {}) => {
     Tty: true,
     Cmd: ['supervisord', '-n'],
     ExposedPorts: {
-      '8118/tcp': {}
+      '8118/tcp': {},
+      '3000/tcp': {}
     },
     Volumes: {
       '/ovpn': {}
     },
-    Env: [
-      `VPN_USER=${auth.user || config.user}`,
-      `VPN_PASS=${auth.pass || config.pass}`,
-      `OVPN_FILE=${name}`
-    ],
     HostConfig: {
       PortBindings: {
-        '8118/tcp': [{ HostIp: '127.0.0.1', HostPort: String(port) }]
+        '8118/tcp': [{ HostIp: '127.0.0.1', HostPort: String(port) }],
+        '3000/tcp': [{ HostIp: '127.0.0.1', HostPort: String(rpcPort) }]
       },
       Dns: ['8.8.8.8', '8.8.4.4'],
       Binds: [`${__dirname}/../ovpn:/ovpn`],
@@ -58,16 +64,14 @@ const create = async (name, port, auth = {}) => {
     }
   })
 
-  return created
-}
-
 const getContainers = async () => {
   const all = await docker.listContainers({ all: true })
   return all.filter(c => c.Image === config.imageName)
 }
 
+// todo
 const renewVpn = async (name, retry) => {
-  console.log('renew VPN', name)
+  logger.info('renew VPN', name)
   const vpn = state.vpns[name]
 
   const found = (await getContainers()).find(c =>
@@ -76,13 +80,15 @@ const renewVpn = async (name, retry) => {
   const container = docker.getContainer(found.Id)
   try {
     await container.stop()
-    console.log('stopped', name, found.Id)
+    logger.info('stopped', name, found.Id)
     await container.remove({ force: true })
-    console.log('removed', name, found.Id)
+    logger.info('removed', name, found.Id)
 
     const newVpn = sample(state.filtered)
-    const _newCont = await create(newVpn, vpn.port)
-    await _newCont.start()
+    await (await create(newVpn, vpn.port)).start()
+
+    // Wait a little for openvpn to connect
+    await wait(3000)
 
     state.vpns[newVpn] = {
       ...vpn,
@@ -92,23 +98,42 @@ const renewVpn = async (name, retry) => {
     }
 
     delete state.vpns[name]
-    console.log(newVpn, 'started', 'on port', vpn.port)
+    logger.info(newVpn, 'started', 'on port', vpn.port)
   } catch (err) {
-    console.error(err.message)
+    logger.error(err.message)
 
     if (!retry) {
-      console.log('retrying...')
+      logger.info('retrying...')
       renewVpn(name, true)
     }
   }
 }
 
+const checkAvailability = async () => new Promise(resolve => {
+  const check = () => {
+    const available = Object.keys(state.vpns)
+      .filter(vpn => state.vpns[vpn].ready)
+
+    if (available && available.length) {
+      resolve(available)
+      return
+    }
+
+    logger.info(available.length)
+
+    setTimeout(check, 100)
+  }
+
+  check()
+})
+
 // Proxy server
-const server = http.createServer((req, res) => {
-  const available = Object.keys(state.vpns)
-    .filter(vpn => state.vpns[vpn].ready)
+const server = http.createServer(async (req, res) => {
+  const available = await checkAvailability()
+
   const vpn = sample(available)
-  console.log({ vpn }, state.publicIp)
+  logger.info({ vpn }, state.publicIp)
+
   proxy.web(req, res, {
     target: {
       host: 'localhost',
@@ -122,59 +147,115 @@ const server = http.createServer((req, res) => {
   res.on('finish', () => last && renewVpn(vpn))
 })
 
-// Default regex for US and Chilean VPNs
-const initialConfig = async (regex = '^(us|cl)') => {
-  state.allFiles = await fs.readdir('./ovpn')
-  state.filtered = state.allFiles
-    .filter(f => f.endsWith('ovpn'))
-    .filter(s => new RegExp(regex).test(s))
+const dockerUp = async () => Promise.all(config.ovpns
+  .filter(vpn => vpn.enabled)
+  .reduce(({ accum, vpns }, vpn, i, arr) => {
+    const ports = _.times(vpn.maxClients, n => ({
+      proxy: config.proxy.initialPort + accum + n,
+      rpc: config.proxy.initialRpcPort + accum + n
+    }))
 
-  state.vpns = sample(state.filtered, 6).reduce((obj, vpn, i) => ({
-    ...obj,
-    [vpn]: {
-      name: vpn,
-      port: config.proxy.startsFrom + i,
-      count: 0,
-      ready: false
-    }
-  }), {})
+    const vpnArr = [...vpns, { ...vpn, ports }]
+    if (i === arr.length - 1) return vpnArr
 
-  return state.vpns
-}
+    return { vpns: vpnArr, accum: accum + vpn.maxClients }
+  }, { vpns: [], accum: 0 })
+  .map(async vpn => {
+    const { id, maxClients, ports } = vpn
+    const files = await getFiles(id)
 
-const main = async () => {
-  await initialConfig()
-  console.log('state.vpns', state.vpns)
+    state.files.push(...files.map(file => ({ vendor: id, file })))
 
-  await Promise.all(Object.values(state.vpns).map(async vpn => {
-    const _newCont = await create(vpn.name, vpn.port)
-    await _newCont.start()
+    await Promise.all(ports.map(async (port, i) => {
+      const contName = `${id}-${port.proxy}`
+      const container = await create(contName, port.proxy, port.rpc)
+      await container.start()
 
-    state.vpns[vpn.name].ready = true
+      state.vpns[contName] = {
+        id,
+        port,
+        count: Math.floor(config.reqLimit / maxClients) * i,
+        ready: false,
+        rpc: jayson.client.tcp({ port: port.rpc })
+      }
 
-    console.log(vpn.name, 'started', 'on port', vpn.port)
+      logger.info(contName, 'started', 'on port', port)
+    }))
   }))
 
-  console.log(state.vpns)
-  console.log('listening on port 5050')
-  server.listen(config.proxy.port)
-  state.publicIp = await myIp()
-  console.log('public ip', state.publicIp)
-}
-
-exitHook(async callback => {
-  const containers = await getContainers()
-
-  await Promise.all(containers.map(async ({ Id, Names }) => {
+const dockerDown = async () => Promise.all((await getContainers())
+  .map(async ({ Id, Names }) => {
     const container = docker.getContainer(Id)
     try {
       await container.remove({ force: true })
-      console.log(Names[0], 'removed')
+      logger.info(Names[0], 'removed')
     } catch (e) {
-      console.error(e.message)
+      logger.error(e.message)
     }
   }))
 
+const connect = async (vpnKey, name) =>
+  new Promise((resolve, reject) => {
+    const vpn = state.vpns[vpnKey]
+    logger.info('vpn.rpc.connect', vpn.id, name)
+
+    vpn.rpc.request('connect', [vpn.id, name], (err, response) => {
+      if (err) return reject(err)
+      resolve(response && response.result)
+    })
+  })
+
+const disconnect = async vpnKey =>
+  new Promise((resolve, reject) => {
+    const vpn = state.vpns[vpnKey]
+    vpn.rpc.request('disconnect', [vpn.id], (err, response) => {
+      if (err) return reject(err)
+      resolve(response && response.result)
+    })
+  })
+
+const getVpnFile = (vendor, num = 0) => {
+  const arr = state.files
+    .filter(f => f.vendor === vendor)
+    .map(f => f.file)
+  return arr[num % arr.length]
+}
+
+const main = async () => {
+  await dockerUp()
+
+  // Wait for containers to start (supervisord)
+  const waitFor = 2000
+  logger.info(`Waiting ${waitFor / 1000} seconds...`)
+  await wait(waitFor)
+
+  const pAll = Object.keys(state.vpns).map(async key => {
+    const vpn = state.vpns[key]
+    const stats = state.stats[vpn.id] || { connNum: 0 }
+    state.stats[vpn.id] = stats
+
+    try {
+      const file = getVpnFile(vpn.id, stats.connNum++)
+      logger.info('vpn.conn.filename', key, file)
+      const res = await connect(key, file)
+      logger.info('vpn.conn', res)
+    } catch (err) {
+      logger.error(err)
+    }
+  })
+
+  await Promise.all(pAll)
+
+  logger.info(`listening on port ${config.proxy.port}`)
+  server.listen(config.proxy.port)
+
+  state.publicIp = await myIp()
+  logger.info('public ip', state.publicIp)
+}
+
+exitHook(async callback => {
+  await dockerDown()
+  logger.info('containers removed')
   callback()
 })
 

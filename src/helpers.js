@@ -12,3 +12,6 @@ exports.myIp = async () => {
   const { data } = await axios('https://api.ipify.org/?format=json')
   return data.ip
 }
+
+exports.wait = async (ms = 1000) =>
+  new Promise(resolve => setTimeout(resolve, ms))
