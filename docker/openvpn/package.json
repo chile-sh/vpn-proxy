@@ -1,0 +1,11 @@
+{
+  "name": "openvpn",
+  "version": "1.0.0",
+  "bin": {
+    "openvpn-start": "./openvpn.js"
+  },
+  "dependencies": {
+    "jayson": "^2.1.2"
+  },
+  "license": "MIT"
+}
