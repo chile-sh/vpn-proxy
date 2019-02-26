@@ -13,5 +13,13 @@ This way, you can have a cheap Luminati-like proxy service (using VPN services l
 
 > TODO
 
+Set ovpn files password
+```bash
+$ VPN_USER=user
+$ VPN_PASS=password
+$ printf "$VPN_USER\n$VPN_PASS" > auth.txt
+$ for f in $(cd ovpn; bash -c ls); do echo "auth-user-pass auth.txt" >> VPN/$f; done
+```
+
 # License
 GNU General Public License v3.0

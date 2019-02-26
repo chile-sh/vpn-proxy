@@ -4,4 +4,5 @@ node_modules
 .DS_Store
 
 .env
-ovpn/*.ovpn
+ovpn/**/*.*
+config.js
