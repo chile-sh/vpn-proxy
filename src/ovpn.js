@@ -119,19 +119,45 @@ const connect = async (vpnKey, name) =>
     })
   })
 
-const disconnect = async vpnKey =>
-  new Promise((resolve, reject) => {
-    const vpn = state.vpns[vpnKey]
-    vpn.rpc.request('disconnect', [vpn.id], (err, response) => {
-      if (err) return reject(err)
-      resolve(response && response.result)
-    })
+const disconnect = async vpnKey => new Promise((resolve, reject) => {
+  const vpn = state.vpns[vpnKey]
+  vpn.rpc.request('disconnect', [vpn.id], (err, response) => {
+    if (err) return reject(err)
+    resolve(response && response.result)
   })
+})
+
+const getNet = vpnKey => new Promise((resolve, reject) => {
+  state.vpns[vpnKey].rpc.request('getNet', [], (err, response) => {
+    if (err) return reject(err)
+    resolve(response && response.result)
+  })
+})
+
+const renew = async (vpnId, vpnKey, num = 0) => {
+  const net = await getNet(vpnKey)
+  const file = getVpnFile(vpnId, num)
+
+  if (net.tun0) await disconnect(vpnKey)
+  const ip = await connect(vpnKey, file)
+
+  return { file, ip }
+}
+
+const getVpnFile = (vendor, num = 0) => {
+  const arr = state.files
+    .filter(f => f.vendor === vendor)
+    .map(f => f.file)
+  return arr[num % arr.length]
+}
 
 module.exports = {
   getFiles,
+  getVpnFile,
+  getNet,
   connect,
   disconnect,
+  renew,
   docker: {
     getContainers,
     up: dockerUp,
