@@ -4,5 +4,11 @@ module.exports = {
   publicIp: null,
   vpns: {},
   files: [],
-  stats: {}
+  stats: {},
+
+  availability: {
+    isChecking: false,
+    isAvailable: false,
+    promise: Promise.resolve()
+  }
 }
